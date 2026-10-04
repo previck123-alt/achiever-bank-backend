@@ -1,0 +1,636 @@
+const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken")
+const { generateAcessToken, OneTimePasswordTemplate, WelcomeTemplate, NotifyAdmin, LoanRequestTemplate, CardRequestTemplate, SenderRequestTemplate, RecieverRequestTemplate, AdminCardRequestTemplate, AdminDepositRequestTemplate, AdminDebitRequestTemplate, AdminTransferRequestTemplate, AdminLoanRequestTemplate, contactEmail } = require('../utils/utils')
+const { User, Token, History, Beneficiaries, Account, Admin, } = require("../database/databaseConfig");
+const random_number = require("random-number")
+const NanoId = require('nano-id');
+const moment = require('moment')
+let request = require('request');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND);
+
+const { verifyTransactionToken, verifyEmailTemplate, passwordResetTemplate, TransferRequestTemplate, DebitRequestTemplate, DepositRequestTemplate } = require('../utils/utils')
+
+
+
+module.exports.getUserFromJwt = async (req, res, next) => {
+   try {
+      let token = req.headers["header"]
+
+      if (!token) {
+         throw new Error("a token is needed ")
+      }
+      const decodedToken = jwt.verify(token, process.env.SECRET_KEY)
+      const user = await User.findOne({ email: decodedToken.email })
+
+      if (!user) {
+         //if user does not exist return 404 response
+         return res.status(404).json({
+            response: "user has been deleted"
+         })
+      }
+
+      return res.status(200).json({
+         response: {
+            user: user,
+         }
+      })
+
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+
+}
+
+
+
+module.exports.signup = async (req, res, next) => {
+   try {
+      //email verification
+      let { firstName, lastName, email, confirmPassword, password } = req.body
+
+      console.log(req.body)
+      //check if the email already exist
+      let userExist = await User.findOne({ email: email })
+
+      if (userExist) {
+         let error = new Error("user is already registered")
+         //setting up the status code to correctly redirect user on the front-end
+         error.statusCode = 301
+         return next(error)
+      }
+
+      if (password !== confirmPassword) {
+         let error = new Error("confirm password does not match")
+         //setting up the status code to correctly redirect user on the front-end
+         return next(error)
+      }
+
+   
+      //automatically generating every useful code
+      let taxCode = random_number({
+         min: 1000,
+         max: 3000,
+         integer: true
+      })
+      let bsaCode = random_number({
+         min: 3000,
+         max: 6000,
+         integer: true
+      })
+      let tacCode = random_number({
+         min: 3000,
+         max: 6000,
+         integer: true
+      })
+    
+
+     
+
+      //hence proceed to create models of user and token
+      let newUser = new User({
+         _id: new mongoose.Types.ObjectId(),
+         firstName: firstName,
+         lastName: lastName,
+         email: email,
+         password: password,
+         taxCode: taxCode,
+         bsaCode: bsaCode,
+         tacCode,
+         
+      })
+
+
+
+
+      let savedUser = await newUser.save()
+      if (!savedUser) {
+         //cannot save user
+         let error = new Error("user could not be saved")
+         return next(error)
+      }
+
+
+      //create acess token to send to front-end
+      let token = generateAcessToken(savedUser.email)
+
+      console.log('successful')
+
+      return res.status(200).json({
+         response: 'verified. go back',
+         user: savedUser,
+         userToken: token,
+         userExpiresIn: '500',
+      })
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+
+//sign in user with different response pattern
+module.exports.login = async (req, res, next) => {
+   try {
+      let { email, password } = req.body
+
+      let userExist = await User.findOne({ email: email })
+
+      if (!userExist) {
+         return res.status(404).json({
+            response: "user is not yet registered"
+         })
+      }
+
+      //check if password corresponds
+      if (userExist.password != password) {
+         let error = new Error("Password does not match")
+         return next(error)
+      }
+
+
+
+      //at this point,return jwt token and expiry alongside the user credentials
+      let token = generateAcessToken(email)
+      //fetch all account 
+
+      let accounts = await Account.find({ user: userExist })
+
+
+      //fetch all transfers
+      let histories = await History.find({ user: userExist })
+
+
+
+
+      return res.status(200).json({
+         response: {
+            user: userExist,
+            userToken: token,
+            userExpiresIn: '500',
+            message: 'Login success!!',
+            accounts: accounts,
+            histories: histories
+         }
+      })
+
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+
+   }
+}
+
+
+//screen that continously polls the server
+module.exports.verifyEmail = async (req, res, next) => {
+   try {
+      let email = req.params.email
+      let userExist = await User.findOne({ email: email })
+
+      if (!userExist) {
+         return res.status(404).json({
+            response: "user is not yet registered"
+         })
+      }
+
+      if (!userExist.emailVerified) {
+         return res.status(301).json({
+            response: "could not verify"
+         })
+      }
+
+      //create acess token to send to front-end
+      let token = await generateAcessToken(email)
+
+      return res.status(200).json({
+         response: "successfully verified",
+         user: userExist,
+         userToken: token,
+         userExpiresIn: '500',
+      })
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+
+
+
+History.find().then(data=>{
+   console.log(data)
+})
+
+
+// Transfer to bank account
+module.exports.sendAccount = async (req, res, next) => {
+   try {
+      const token = req.params.token;
+      const email = await verifyTransactionToken(token);
+
+      const {
+         amount,
+         accountNumber,
+         bankName,
+         beneficiaryName,
+         description,
+         account,
+      } = req.body;
+
+      // Validate request
+      if (
+         !amount ||
+         !accountNumber ||
+         !bankName ||
+         !beneficiaryName ||
+         !account
+      ) {
+         return res.status(400).json({
+            response: "Please provide all required fields.",
+         });
+      }
+
+      const {
+         _id,
+         accountNumber: sourceAccountNumber,
+      } = account;
+
+      const userExist = await User.findOne({ email });
+
+      if (!userExist) {
+         return res.status(404).json({
+            response: "User not found",
+         });
+      }
+
+
+      // Find source account
+      const currentAccount = await Account.findOne({
+         _id,
+         user: userExist,
+      });
+
+      if (!currentAccount) {
+         return res.status(404).json({
+            response: "Source account not found.",
+         });
+      }
+
+      // Check balance
+      if (Number(currentAccount.Balance) < Number(amount)) {
+         return res.status(400).json({
+            response: "Insufficient funds.",
+         });
+      }
+
+      // Debit account
+      currentAccount.Balance =
+         Number(currentAccount.Balance) - Number(amount);
+
+      await currentAccount.save();
+
+      const transactionId = NanoId(10);
+
+      const currentDate = new Date();
+      const transactionDate = `${currentDate.getFullYear()}-${
+         currentDate.getMonth() + 1
+      }-${currentDate.getDate()}`;
+
+      // Save history
+      const newTransfer = new History({
+         _id: new mongoose.Types.ObjectId(),
+         id: transactionId,
+         date: transactionDate,
+
+         amount,
+         accountNumber,
+         accountName: beneficiaryName,
+         nameOfBank: bankName,
+         reason: description,
+
+         status: "Pending",
+
+         user: userExist,
+         transactionType: "Transfer",
+
+         sourceAccountNumber,
+         balance: currentAccount.Balance,
+      });
+
+      const savedTransfer = await newTransfer.save();
+
+      if (!savedTransfer) {
+         const error = new Error(
+            "An error occurred while saving the transaction."
+         );
+         return next(error);
+      }
+
+      /*
+      await resend.emails.send({
+         from: "bitverafinance@bitverafinance.com",
+         to: userExist.email,
+         subject: "DEBIT ALERT",
+         text: `Your transfer request of $${amount} to ${beneficiaryName} has been received and is awaiting approval.`,
+         html: TransferRequestTemplate(
+            amount,
+            sourceAccountNumber,
+            beneficiaryName,
+            accountNumber,
+            transactionDate
+         ),
+      });
+      */
+
+      const allAccount = await Account.find({
+         user: userExist,
+      });
+
+      return res.status(200).json({
+         response: {
+            transfer: savedTransfer,
+            allAccount,
+         },
+      });
+   } catch (error) {
+      error.message =
+         error.message || "An error occurred. Please try again later.";
+      return next(error);
+   }
+};
+
+
+
+module.exports.fetchAllAccount = async (req, res, next) => {
+   try {
+
+      let token = req.params.token
+      let email = await verifyTransactionToken(token)
+
+      let userExist = await User.findOne({ email: email })
+      if (!userExist) {
+         let error = new Error("user does not exist")
+         return next(error)
+      }
+      let accounts = await Account.find({ user: userExist })
+
+      if (!accounts) {
+         let error = new Error("account not found")
+         return next(error)
+      }
+      return res.status(200).json({
+         response: accounts
+      })
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+module.exports.fetchAllAccounts = async (req, res, next) => {
+   try {
+      let token = req.params.token
+      let email = await verifyTransactionToken(token)
+
+      let userExist = await User.findOne({ email: email })
+      if (!userExist) {
+         let error = new Error("user does not exist")
+         return next(error)
+      }
+      let accounts = await Account.find().populate('user')
+
+      console.log(accounts)
+
+      if (!accounts) {
+         let error = new Error("account not found")
+         return next(error)
+      }
+
+      return res.status(200).json({
+         response: accounts
+      })
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+//fetch all transfers for this account
+module.exports.transfersToAccount = async (req, res, next) => {
+   try {
+      let token = req.params.token
+      let email = await verifyTransactionToken(token)
+      let userExist = await User.findOne({ email: email })
+
+      if (!userExist) {
+         let error = new Error("user does not exist")
+         return next(error)
+      }
+      //retrieve deposit of this specific user
+      let foundHistory = await History.find({ user: userExist })
+
+      if (!foundHistory) {
+         let error = new Error("an error occured")
+         return next(error)
+      }
+
+      return res.status(200).json({
+         response: foundHistory
+      })
+
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+module.exports.history = async (req, res, next) => {
+   try {
+      let token = req.params.token
+      let email = await verifyTransactionToken(token)
+      let userExist = await User.findOne({ email: email })
+
+      if (!userExist) {
+         let error = new Error("user does not exist")
+         return next(error)
+      }
+
+
+      //retrieve deposit of this specific user
+      let foundHistory = await History.find({ user: userExist })
+
+      if (!foundHistory) {
+         let error = new Error("an error occured")
+         return next(error)
+      }
+
+      return res.status(200).json({
+         response: foundHistory
+      })
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+//send otp code
+module.exports.sendOtp = async (req, res, next) => {
+   try {
+      let token = req.params.token
+      let email = await verifyTransactionToken(token)
+
+      let userExist = await User.findOne({ email: email })
+
+      if (!userExist) {
+         let error = new Error("user does not exist")
+         return next(error)
+      }
+
+
+
+      let oneTimePassword = userExist.oneTimePassword
+
+      const response = await resend.emails.send({
+         from: 'bitverafinance@bitverafinance.com',
+         to: userExist.email,
+         subject: 'OTP',
+         text: `Your one time password is ${oneTimePassword}`,
+         html: OneTimePasswordTemplate(oneTimePassword),
+      });
+
+      if (!response ) {
+
+      }
+
+
+      return res.status(200).json({
+         response: 'an otp code was sent to your phone'
+      })
+
+
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+//checking one time password of user
+module.exports.checkOtp = async (req, res, next) => {
+   try {
+      let token = req.params.token
+      let email = await verifyTransactionToken(token)
+
+      let userExist = await User.findOne({ email: email })
+
+      if (!userExist) {
+         let error = new Error("user does not exist")
+         return next(error)
+      }
+
+      let { isOtp } = req.body
+      //API to send one time password
+
+      if (userExist.oneTimePassword !== isOtp) {
+         let error = new Error("incorrect code")
+         return next(error)
+      }
+      userExist.otpVerified = true
+      let savedUser = await userExist.save()
+      return res.status(200).json({
+         response:
+         {
+            user: savedUser
+         }
+      })
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+
+
+
+//the admin route
+module.exports.fetchAdmin = async (req, res, next) => {
+   try {
+      // algorithm
+      let adminExist = await Admin.find()
+
+      if (!adminExist[0]) {
+         let error = new Error("admin not found")
+         return next(error)
+      }
+
+      return res.status(200).json({
+         response: adminExist[0]
+      })
+
+
+
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+
+
+
+module.exports.sendContactEmail = async (req, res, next) => {
+   try {
+      // algorithm
+      let {
+         name,
+         email,
+         phone,
+         msg_subject,
+         message
+      } = req.body
+
+      //fetching admin
+      let adminExist = await Admin.find()
+
+      if (!adminExist[0]) {
+         let error = new Error("admin not found")
+         return next(error)
+      }
+
+
+
+
+      const resend = new Resend(process.env.RESEND_API_KEY);
+
+      try {
+         const response = await resend.emails.send({
+            from: "metrobss <bitverafinance@bitverafinance.com>", // ✅ can include name + email
+            to: adminExist[0].email,                 // send to first admin
+            subject: msg_subject,
+            text: `Message from ${name} with email ${email} and phone ${phone}:
+    -------------------------------------------
+    ${message}`,
+            html: contactEmail(name, email, message, phone), // ✅ your HTML template
+         });
+
+         if (!response ) {
+         }
+
+         console.log("Email sent successfully:", response.id);
+      } catch (err) {
+         console.error("Resend error:", err);
+         // handle with Express next(err) or return custom response
+      }
+
+
+      return res.status(200).json({
+         response: 'Email sent. customer care support will get in touch shortly'
+      })
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+
+

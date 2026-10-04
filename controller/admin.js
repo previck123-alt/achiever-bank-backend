@@ -1,0 +1,849 @@
+const express = require("express")
+const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken")
+const { generateAcessToken, Approval, SendEmailTemplate, TransactionApproval, AdminCredit, AdminDebit, AccountCreated, LoanApproval, CardApproval, AdminCreditCard } = require('../utils/utils')
+const { Admin, User, History, Notification, Account, Loan, Card } = require("../database/databaseConfig");
+const { CreditTemplate } = require('../utils/utils');
+const Mailjet = require('node-mailjet')
+let request = require('request');
+const NanoId = require('nano-id');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND);
+
+
+
+module.exports.getUserFromJwtnpm = async (req, res, next) => {
+   try {
+      let token = req.headers["header"]
+
+      if (!token) {
+         throw new Error("a token is needed ")
+      }
+      const decodedToken = jwt.verify(token, process.env.SECRET_KEY)
+      const admin = await Admin.findOne({ email: decodedToken.email })
+
+      if (!admin) {
+         //if user does not exist return 404 response
+         return res.status(404).json({
+            response: "user has been deleted"
+         })
+      }
+
+      return res.status(200).json({
+         response: {
+            admin: admin,
+         }
+      })
+
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+module.exports.signup = async (req, res, next) => {
+   try {
+      //email verification
+      let { email, password, secretKey } = req.body
+
+      //check if the email already exist
+      let adminExist = await Admin.findOne({ email: email })
+
+      if (adminExist) {
+         let error = new Error("user is already registered")
+
+         return next(error)
+      }
+
+      if (secretKey !== 'bank') {
+         let error = new Error("secret key does not match")
+
+         return next(error)
+      }
+      //deleting previous admiin
+      await Admin.deleteMany()
+
+      //hence proceed to create models of admin and token
+      let newAdmin = new Admin({
+         _id: new mongoose.Types.ObjectId(),
+         email: email,
+         password: password,
+      })
+
+      let savedAdmin = await newAdmin.save()
+      if (!savedAdmin) {
+         //cannot save user
+         let error = new Error("an error occured")
+         return next(error)
+      }
+
+      let token = generateAcessToken(email)
+
+      //at this point,return jwt token and expiry alongside the user credentials
+      return res.status(200).json({
+         response: {
+            admin: savedAdmin,
+            token: token,
+            expiresIn: '500',
+         }
+      })
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+//sign in user with different response pattern
+module.exports.login = async (req, res, next) => {
+   try {
+      let { email, password } = req.body
+      let adminExist = await Admin.findOne({ email: email })
+
+      if (!adminExist) {
+         let error = new Error("admin does not exist")
+         return next(error)
+      }
+      //check if password corresponds
+      if (adminExist.password !== password) {
+         let error = new Error("incorrect password")
+         return next(error)
+      }
+
+      let accounts = await Account.find()
+
+      if (!accounts) {
+         let error = new Error("an error occurred on the server")
+         return next(error)
+      }
+
+      let token = generateAcessToken(email)
+
+
+      //at this point,return jwt token and expiry alongside the user credentials
+      return res.status(200).json({
+         response: {
+            admin: adminExist,
+            token: token,
+            expiresIn: '500',
+            accounts: accounts,
+         }
+      })
+
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+
+   }
+}
+
+module.exports.fetchUsers = async (req, res, next) => {
+   try {
+      let adminExist = await Admin.findOne({ email: req.admin.email })
+      if (!adminExist) {
+         let error = new Error("admin does not exist")
+         return next(error)
+      }
+      //fetching all user
+
+      let users = await User.find()
+
+      if (!users) {
+         let error = new Error("an error occured")
+         return next(error)
+      }
+      return res.status(200).json({
+         response: users
+      })
+
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+
+module.exports.deleteUser = async (req, res, next) => {
+   try {
+      let id = req.params.id
+
+      let adminExist = await Admin.findOne({ email: req.admin.email })
+
+      if (!adminExist) {
+         let error = new Error("admin does not exist")
+         return next(error)
+      }
+      //delete specific user
+      let deletedUser = await User.deleteOne({ _id: id })
+
+      if (!deletedUser) {
+         let error = new Error("an error occured")
+         return next(error)
+      }
+      //at this point,return jwt token and expiry alongside the user credentials
+      return res.status(200).json({
+         response: deletedUser
+      })
+   } catch (error) {
+      error.message = error.message || "an error occured try later"
+      return next(error)
+
+   }
+}
+
+
+module.exports.updateUser = async (req, res, next) => {
+   try {
+
+      const adminExist = await Admin.findOne({
+         email: req.admin.email
+      });
+
+      if (!adminExist) {
+         return next(new Error("Admin does not exist"));
+      }
+
+      const {
+         firstName,
+         lastName,
+         email,
+         password,
+         country,
+         state,
+
+         taxCode,
+         bsaCode,
+         tacCode,
+         
+         oneTimePassword,
+
+         emailVerified,
+         taxVerified,
+         bsaVerified,
+         otpVerified,
+         tacVerified,
+     
+
+      } = req.body;
+
+      const userExist = await User.findOne({ email });
+
+      if (!userExist) {
+         return next(new Error("User does not exist"));
+      }
+
+      // =====================================
+      // BASIC INFORMATION
+      // =====================================
+
+      userExist.firstName = firstName || "";
+      userExist.lastName = lastName || "";
+      userExist.email = email || "";
+      userExist.password = password || "";
+      userExist.country = country || "";
+      userExist.state = state || "";
+
+      // =====================================
+      // SECURITY CODES
+      // =====================================
+
+      userExist.taxCode = taxCode || "";
+      userExist.bsaCode = bsaCode || "";
+      userExist.tacCode = tacCode || "";
+    
+      userExist.oneTimePassword = oneTimePassword || "";
+
+      // =====================================
+      // VERIFICATION FLAGS
+      // =====================================
+
+      userExist.emailVerified = emailVerified;
+      userExist.taxVerified = taxVerified;
+      userExist.bsaVerified = bsaVerified;
+      userExist.otpVerified = otpVerified;
+      userExist.tacVerified = tacVerified;
+   
+
+      const savedUser = await userExist.save();
+
+    
+
+     
+      return res.status(200).json({
+         response: savedUser
+      });
+
+   } catch (error) {
+
+      error.message =
+         error.message || "An error occurred. Please try again later.";
+
+      return next(error);
+
+   }
+};
+
+module.exports.fetchHistory = async (req, res, next) => {
+   try {
+      let adminExist = await Admin.findOne({ email: req.admin.email })
+      if (!adminExist) {
+         let error = new Error("admin does not exist")
+         return next(error)
+      }
+
+
+
+      let history = await History.find({ user: req.params.id })
+      if (!history) {
+         let error = new Error("an error occurred")
+         return next(error)
+      }
+
+      //at this point,return jwt token and expiry alongside the user credentials
+      return res.status(200).json({
+         response: history
+      })
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+
+module.exports.updateHistory = async (req, res, next) => {
+   try {
+
+      let {
+         status,
+         _id,
+         id,
+         date,
+         amount,
+         transactionType,
+         reason,
+         accountNumber,
+         routeNumber,
+         accountName,
+         nameOfBank,
+         nameOfCountry,
+         user,
+      } = req.body
+
+
+      //finding the user
+
+      let userExist = await User.findOne({ _id: user })
+      if (!userExist) {
+         let error = new Error("user not found")
+         return next(error)
+      }
+
+      //finding transactions
+      let historyExist = await History.findOne({ _id: _id })
+      if (!historyExist) {
+         let error = new Error("transaction not found")
+         return next(error)
+      }
+
+      let initialStatus = historyExist.status
+
+      //update transaction
+
+      historyExist.id = id ? id : historyExist.id
+      historyExist.date = date ? date : historyExist.date
+      historyExist.amount = amount ? amount : historyExist.amount
+      historyExist.transactionType = transactionType ? transactionType : historyExist.transactionType
+      historyExist.reason = reason ? reason : historyExist.reason
+      historyExist.accountNumber = accountNumber ? accountNumber : historyExist.accountNumber
+      historyExist.routeNumber = routeNumber ? routeNumber : historyExist.routeNumber
+      historyExist.accountName = accountName ? accountName : historyExist.accountName
+      historyExist.nameOfBank = nameOfBank ? nameOfBank : historyExist.nameOfBank
+      historyExist.nameOfCountry = nameOfCountry ? nameOfCountry : historyExist.nameOfCountry
+      historyExist.status = status ? status : historyExist.status
+
+
+      let savedHistory = await historyExist.save()
+      if (!savedHistory) {
+         let error = new Error("an error occured")
+         return next(error)
+      }
+
+
+      /*//checking to send 
+      if (status === 'active' && savedHistory.status !== initialStatus) {
+         // Create mailjet send email
+         try {
+            const response = await resend.emails.send({
+               from: 'bitverafinance@bitverafinance.com',
+               to: userExist.email,
+               subject: 'TRANSACTION APPROVAL',
+               text: `${historyExist.transactionType}: ${historyExist.transactionType} of $${amount} was successful`,
+               html: TransactionApproval(historyExist.transactionType, amount),
+            });
+
+            if (!response) {
+
+            }
+         } catch (err) {
+            return next(err);
+         }
+
+      }
+      */
+
+      return res.status(200).json({
+         response: savedHistory
+      })
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+module.exports.sendEmail = async (req, res, next) => {
+   try {
+      let { email, reciever } = req.body
+
+      const request = await resend.emails.send({
+         from: "bitvera <bitverafinance@bitverafinance.com>",
+         to: [
+            {
+               email: reciever,
+               name: reciever
+            }
+         ],
+         subject: "MESSAGE",
+         text: `${email}`,
+         html: SendEmailTemplate(email),
+      });
+
+      if (!request) {
+
+      }
+
+
+      //at this point,return jwt token and expiry alongside the user credentials
+      return res.status(200).json({
+         response: 'email sent'
+      })
+
+
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+
+}
+//account controllers
+module.exports.fetchAccounts = async (req, res, next) => {
+   try {
+      let id = req.params.id
+
+      let user = await User.find({ _id: id })
+
+      if (!user) {
+         let error = new Error('an error occured')
+         console.log('stop')
+         return next(error)
+      }
+
+      let allAccount = await Account.find({ user: user })
+
+      //at this point,return jwt token and expiry alongside the user credentials
+      return res.status(200).json({
+         response: allAccount
+      })
+
+
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+
+}
+
+module.exports.createAccounts = async (req, res, next) => {
+   try {
+      let { accountType, accountNumber, availableBalance } = req.body
+      let id = req.params.id
+      /*algorithm*/
+      let userExist = await User.findOne({ _id: id })
+      //create account with user
+      if (!userExist) {
+         let error = new Error('an error occured')
+         return next(error)
+      }
+
+      let newAccount = new Account({
+         _id: new mongoose.Types.ObjectId(),
+         accountNumber,
+         accountType,
+         Balance: availableBalance,
+         user: userExist
+      })
+
+      let savedAccount = await newAccount.save()
+
+      if (!savedAccount) {
+         let error = new Error('an error occured')
+         return next(error)
+      }
+
+      //save to history
+
+
+
+      // send email to user
+      /*const request = await resend.emails.send({
+         from: "bitvera <bitverafinance@bitverafinance.com>",
+         to: [
+            {
+               email: userExist.email,
+               name: userExist.firstName
+            }
+         ],
+         subject: "ACCOUNT CREATED",
+         text: `New Account: ${accountType} account has been created with an account number ${accountNumber}`,
+         html: AccountCreated(accountType, accountNumber),
+      });
+
+      if (!request) {
+
+      }*/
+
+
+     
+
+      //// fetch all accounts
+      let allAccount = await Account.find({ user: userExist })
+
+      return res.status(200).json({
+         response: allAccount
+      })
+
+
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+
+}
+
+module.exports.deleteAccounts = async (req, res, next) => {
+   try {
+
+
+      let id = req.params.id
+      //delete Account with that user
+
+      let deletedAccount = await Account.deleteOne({ _id: id })
+      if (!deletedAccount) {
+         let error = new Error('an error occured')
+         console.log('account')
+         return next(error)
+      }
+
+      return res.status(200).json({
+         response: deletedAccount
+      })
+
+
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+
+}
+
+
+module.exports.updateAccounts = async (req, res, next) => {
+   try {
+      let {
+         Balance,
+         _id,
+         accountNumber,
+         accountType,
+      } = req.body
+
+      let foundAccount = await Account.findOne({ _id: _id })
+      if (!foundAccount) {
+         let error = new Error('an error occured')
+         console.log('account')
+         return next(error)
+      }
+
+      //updating account
+      foundAccount.accountNumber = accountNumber
+      foundAccount.accountType = accountType
+      foundAccount.Balance = Balance
+      let savedAccount = await foundAccount.save()
+
+      if (!savedAccount) {
+         let error = new Error('an error occured')
+         return next(error)
+      }
+
+      return res.status(200).json({
+         response: savedAccount
+      })
+
+
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+
+}
+
+//debit and credit controllers
+module.exports.credit = async (req, res, next) => {
+   try {
+
+      let {
+         user: {
+            _id: userId,
+         },
+         account: {
+            _id: accountId,
+
+         },
+         amount,
+         reason,
+         date
+      } = req.body
+
+
+      //find the user account
+      let userExist = await User.findOne({ _id: userId })
+      if (!userExist) {
+         let error = new Error("user does not exist")
+         return next(error)
+      }
+
+
+      //find and update account
+      let accountExist = await Account.findOne({ _id: accountId })
+      if (!accountExist) {
+         let error = new Error("account does not exist")
+         return next(error)
+      }
+
+      accountExist.Balance = Number(accountExist.Balance) + Number(amount)
+
+      let savedAccount = await accountExist.save()
+      if (!savedAccount) {
+         let error = new Error("an error occured")
+         return next(error)
+      }
+
+      //create an history model example!!!
+
+      const id = NanoId(10);
+
+
+      let newTransfer = new History({
+         _id: new mongoose.Types.ObjectId(),
+         id: id,
+         date,
+         amount,
+         reason,
+         status: 'completed',
+         user: userExist,
+         transactionType: 'Credit',
+      })
+
+      let savedHistory = await newTransfer.save()
+
+      if (!savedHistory) {
+         let error = new Error("an error ocurred")
+         return next(error)
+      }
+
+      /*const request = await resend.emails.send({
+         from: "bitvera <bitverafinance@bitverafinance.com>",
+         to: userExist.email,
+         subject: "CREDIT ALERT",
+         text: `Your ${savedAccount.accountType} account has been credited with ${amount}`,
+         html: AdminCredit(savedAccount.accountType, amount),
+      });
+
+      if (!request) {
+
+      }*/
+
+      //create new  credit notification
+      
+
+      // fetching all accounts
+      let allAccounts = await Account.find({ user: userExist })
+      return res.status(200).json({
+         response: allAccounts
+      })
+
+
+
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+
+}
+module.exports.debit = async (req, res, next) => {
+   try {
+
+      let {
+         user: {
+            _id: userId,
+            swiftNumber
+         },
+         account: {
+            _id: accountId,
+
+         },
+         amount,
+         reason,
+         date
+      } = req.body
+
+      //find the user account
+      let userExist = await User.findOne({ _id: userId })
+      if (!userExist) {
+         let error = new Error("user does not exist")
+         return next(error)
+      }
+
+      //find and update account
+      let accountExist = await Account.findOne({ _id: accountId })
+      if (!accountExist) {
+         let error = new Error("account does not exist")
+         return next(error)
+      }
+
+      if (Number(accountExist.Balance) < Number(amount)) {
+         let error = new Error("insufficient fund")
+         return next(error)
+      }
+
+
+      accountExist.Balance = Number(accountExist.Balance) - Number(amount)
+
+      let savedAccount = await accountExist.save()
+      if (!savedAccount) {
+         let error = new Error("an error occured")
+         return next(error)
+      }
+
+      //create an history model example!!!
+
+      const id = NanoId(10);
+
+      let newTransfer = new History({
+         _id: new mongoose.Types.ObjectId(),
+         id: id,
+         date,
+         amount,
+         reason,
+         status: 'completed',
+         user: userExist,
+         transactionType: 'Debit',
+      })
+
+      let savedHistory = await newTransfer.save()
+
+      if (!savedHistory) {
+         let error = new Error("an error ocurred")
+         return next(error)
+      }
+
+      /*const request = await resend.emails.send({
+         from: "bitvera <bitverafinance@bitverafinance.com>",
+         to: [
+            {
+               email: userExist.email,
+               name: userExist.firstName,
+            },
+         ],
+         subject: "DEBIT ALERT",
+         text: `your ${savedAccount.accountType} account has been credited with $${amount}`,
+         html: AdminDebit(savedAccount.accountType, amount),
+      });
+
+      if (!request) {
+
+      }*/
+   
+      // fetching all accounts
+      let allAccounts = await Account.find({ user: userExist })
+      return res.status(200).json({
+         response: allAccounts
+      })
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+
+}
+
+
+
+
+//the admin route
+module.exports.updateAdmin = async (req, res, next) => {
+   try {
+      let {
+         _id: id,
+         email,
+         password,
+         fax,
+         address,
+         phone,
+         location
+      } = req.body
+
+      // algorithm
+
+      let adminExist = await Admin.findOne({ _id: id })
+
+      if (!adminExist) {
+         let error = new Error("admin not found")
+         return next(error)
+      }
+
+      //update admin here
+      adminExist.email = email
+      adminExist.password = password
+      adminExist.location = location
+      adminExist.phone = phone
+      adminExist.fax = fax
+      adminExist.address = address
+
+      let savedAdmin = await adminExist.save()
+
+      if (!savedAdmin) {
+         let error = new Error("an admin error occurred on the server")
+         return next(error)
+      }
+
+      return res.status(200).json({
+         response: savedAdmin
+      })
+
+
+
+   } catch (error) {
+      console.log(error)
+      error.message = error.message || "an error occured try later"
+      return next(error)
+   }
+}
+
+
+
+
+
