@@ -35,14 +35,31 @@ const userSchema = new mongoose.Schema({
     },
    
    
+    taxCode: {
+        type: String,
+    },
+    bsaCode: {
+        type: String,
+    },
+    tacCode: {
+        type: String,
+    },
     oneTimePassword: {
         type: String,
     },
-    transactionPinHash: {
-        type: String,
-        select: false,
+    taxVerified: {
+        type: Boolean,
+        default: false
+    },
+    bsaVerified: {
+        type: Boolean,
+        default: false
     },
     otpVerified: {
+        type: Boolean,
+        default: false
+    },
+    tacVerified: {
         type: Boolean,
         default: false
     },

@@ -1,4 +1,3 @@
-const { hashPin, validatePin } = require('../utils/pin');
 const express = require("express")
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken")
@@ -209,11 +208,17 @@ module.exports.updateUser = async (req, res, next) => {
          country,
          state,
 
+         taxCode,
+         bsaCode,
+         tacCode,
+         
          oneTimePassword,
-         transactionPin,
 
          emailVerified,
+         taxVerified,
+         bsaVerified,
          otpVerified,
+         tacVerified,
      
 
       } = req.body;
@@ -236,34 +241,33 @@ module.exports.updateUser = async (req, res, next) => {
       userExist.state = state || "";
 
       // =====================================
-      // AUTHENTICATION / TRANSACTION PIN
+      // SECURITY CODES
       // =====================================
 
+      userExist.taxCode = taxCode || "";
+      userExist.bsaCode = bsaCode || "";
+      userExist.tacCode = tacCode || "";
+    
       userExist.oneTimePassword = oneTimePassword || "";
-
-      if (transactionPin) {
-         if (!validatePin(String(transactionPin))) {
-            return res.status(400).json({
-               response: "Transaction PIN must be exactly 4 digits."
-            });
-         }
-         userExist.transactionPinHash = hashPin(String(transactionPin));
-      }
 
       // =====================================
       // VERIFICATION FLAGS
       // =====================================
 
-      userExist.emailVerified = !!emailVerified;
-      userExist.otpVerified = !!otpVerified;
+      userExist.emailVerified = emailVerified;
+      userExist.taxVerified = taxVerified;
+      userExist.bsaVerified = bsaVerified;
+      userExist.otpVerified = otpVerified;
+      userExist.tacVerified = tacVerified;
    
 
       const savedUser = await userExist.save();
-      const safeUser = savedUser.toObject();
-      delete safeUser.transactionPinHash;
 
+    
+
+     
       return res.status(200).json({
-         response: safeUser
+         response: savedUser
       });
 
    } catch (error) {

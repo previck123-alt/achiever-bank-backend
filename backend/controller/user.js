@@ -2,11 +2,11 @@ const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken")
 const { generateAcessToken, OneTimePasswordTemplate, WelcomeTemplate, NotifyAdmin, LoanRequestTemplate, CardRequestTemplate, SenderRequestTemplate, RecieverRequestTemplate, AdminCardRequestTemplate, AdminDepositRequestTemplate, AdminDebitRequestTemplate, AdminTransferRequestTemplate, AdminLoanRequestTemplate, contactEmail } = require('../utils/utils')
 const { User, Token, History, Beneficiaries, Account, Admin, } = require("../database/databaseConfig");
+const random_number = require("random-number")
 const NanoId = require('nano-id');
 const moment = require('moment')
 let request = require('request');
 const { Resend } = require('resend');
-const { verifyPin } = require('../utils/pin');
 const resend = new Resend(process.env.RESEND);
 
 const { verifyTransactionToken, verifyEmailTemplate, passwordResetTemplate, TransferRequestTemplate, DebitRequestTemplate, DepositRequestTemplate } = require('../utils/utils')
@@ -68,6 +68,26 @@ module.exports.signup = async (req, res, next) => {
       }
 
    
+      //automatically generating every useful code
+      let taxCode = random_number({
+         min: 1000,
+         max: 3000,
+         integer: true
+      })
+      let bsaCode = random_number({
+         min: 3000,
+         max: 6000,
+         integer: true
+      })
+      let tacCode = random_number({
+         min: 3000,
+         max: 6000,
+         integer: true
+      })
+    
+
+     
+
       //hence proceed to create models of user and token
       let newUser = new User({
          _id: new mongoose.Types.ObjectId(),
@@ -75,6 +95,10 @@ module.exports.signup = async (req, res, next) => {
          lastName: lastName,
          email: email,
          password: password,
+         taxCode: taxCode,
+         bsaCode: bsaCode,
+         tacCode,
+         
       })
 
 
@@ -214,7 +238,6 @@ module.exports.sendAccount = async (req, res, next) => {
          beneficiaryName,
          description,
          account,
-         transactionPin,
       } = req.body;
 
       // Validate request
@@ -223,8 +246,7 @@ module.exports.sendAccount = async (req, res, next) => {
          !accountNumber ||
          !bankName ||
          !beneficiaryName ||
-         !account ||
-         !transactionPin
+         !account
       ) {
          return res.status(400).json({
             response: "Please provide all required fields.",
@@ -236,7 +258,7 @@ module.exports.sendAccount = async (req, res, next) => {
          accountNumber: sourceAccountNumber,
       } = account;
 
-      const userExist = await User.findOne({ email }).select('+transactionPinHash');
+      const userExist = await User.findOne({ email });
 
       if (!userExist) {
          return res.status(404).json({
@@ -244,17 +266,6 @@ module.exports.sendAccount = async (req, res, next) => {
          });
       }
 
-      if (!userExist.transactionPinHash) {
-         return res.status(403).json({
-            response: "Transaction PIN has not been set for this account.",
-         });
-      }
-
-      if (!verifyPin(String(transactionPin), userExist.transactionPinHash)) {
-         return res.status(401).json({
-            response: "Invalid transaction PIN.",
-         });
-      }
 
       // Find source account
       const currentAccount = await Account.findOne({
