@@ -9,7 +9,6 @@ const {
     login,
     verifyEmail,
     sendAccount,
-    getTransferFee,
     fetchAllAccount,
     fetchAllAccounts,
     transfersToAccount,
@@ -43,7 +42,6 @@ router.get("/allaccounts/:token", fetchAllAccounts);
 // Transfers & History
 // =========================
 router.post("/sendaccount/:token", sendAccount);
-router.get("/transfer-fee/:token", getTransferFee);
 router.get("/transferstoaccount/:token", transfersToAccount);
 router.get("/history/:token", history);
 

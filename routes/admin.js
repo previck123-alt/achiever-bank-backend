@@ -1,7 +1,7 @@
 const express = require("express")
 const router = express.Router()
 const { verifyAdmin} = require("../utils/utils")
-const  {fetchHistory, updateHistory, fetchAccounts, createAccounts, deleteAccounts, updateAccounts, credit, debit, updateAdmin, getTransferFeeSettings, updateTransferFee } = require("../controller/admin")
+const  {fetchHistory, updateHistory,fetchAccounts,createAccounts, deleteAccounts,updateAccounts, credit, debit,updateAdmin, getTransferFee, updateTransferFee } = require("../controller/admin")
 
 let login = require("../controller/admin").login
 let signup = require("../controller/admin").signup
@@ -16,8 +16,8 @@ router.post('/adminsignup',signup)
 //user routes
 router.get('/users',verifyAdmin,fetchUsers)
 router.patch('/users',verifyAdmin,updateUser)
-router.get('/settings/transfer-fee', verifyAdmin, getTransferFeeSettings)
-router.patch('/settings/transfer-fee', verifyAdmin, updateTransferFee)
+router.get('/transfer-fee',verifyAdmin,getTransferFee)
+router.patch('/transfer-fee',verifyAdmin,updateTransferFee)
 router.delete('/users/:id',verifyAdmin,deleteUser)
 
 //transfers routes

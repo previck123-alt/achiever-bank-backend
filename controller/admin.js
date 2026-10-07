@@ -1,9 +1,10 @@
 const { hashPin, validatePin } = require('../utils/pin');
+const { AppSettings } = require('../database/databaseConfig');
 const express = require("express")
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken")
 const { generateAcessToken, Approval, SendEmailTemplate, TransactionApproval, AdminCredit, AdminDebit, AccountCreated, LoanApproval, CardApproval, AdminCreditCard } = require('../utils/utils')
-const { Admin, User, History, Notification, Account, Loan, Card, AppSettings } = require("../database/databaseConfig");
+const { Admin, User, History, Notification, Account, Loan, Card } = require("../database/databaseConfig");
 const { CreditTemplate } = require('../utils/utils');
 const Mailjet = require('node-mailjet')
 let request = require('request');
@@ -192,6 +193,7 @@ module.exports.deleteUser = async (req, res, next) => {
 
 module.exports.updateUser = async (req, res, next) => {
    try {
+
       const adminExist = await Admin.findOne({
          email: req.admin.email
       });
@@ -201,176 +203,77 @@ module.exports.updateUser = async (req, res, next) => {
       }
 
       const {
-         _id,
          firstName,
          lastName,
          email,
          password,
          country,
          state,
+
          oneTimePassword,
          transactionPin,
+
          emailVerified,
          otpVerified,
+     
+
       } = req.body;
 
-      if (!_id) {
-         return res.status(400).json({
-            response: "User ID is required."
-         });
-      }
-
-      const userExist = await User.findById(_id).select('+transactionPinHash');
+      const userExist = await User.findOne({ email });
 
       if (!userExist) {
-         return res.status(404).json({
-            response: "User does not exist"
-         });
+         return next(new Error("User does not exist"));
       }
 
-      // Only update fields that were actually supplied.
-      if (firstName !== undefined) userExist.firstName = String(firstName).trim();
-      if (lastName !== undefined) userExist.lastName = String(lastName).trim();
+      // =====================================
+      // BASIC INFORMATION
+      // =====================================
 
-      if (email !== undefined) {
-         const normalizedEmail = String(email).trim().toLowerCase();
-         if (!normalizedEmail) {
-            return res.status(400).json({ response: "Email cannot be empty." });
-         }
+      if (firstName !== undefined) userExist.firstName = firstName;
+      if (lastName !== undefined) userExist.lastName = lastName;
+      if (email !== undefined) userExist.email = email;
+      if (password !== undefined && password !== "") userExist.password = password;
+      if (country !== undefined) userExist.country = country;
+      if (state !== undefined) userExist.state = state;
 
-         const duplicate = await User.findOne({
-            email: normalizedEmail,
-            _id: { $ne: userExist._id }
-         });
+      // =====================================
+      // AUTHENTICATION / TRANSACTION PIN
+      // =====================================
 
-         if (duplicate) {
-            return res.status(409).json({
-               response: "Another user already uses that email address."
-            });
-         }
+      if (oneTimePassword !== undefined) userExist.oneTimePassword = oneTimePassword;
 
-         userExist.email = normalizedEmail;
-      }
-
-      if (password !== undefined && String(password).length > 0) {
-         userExist.password = String(password);
-      }
-
-      if (country !== undefined) userExist.country = String(country).trim();
-      if (state !== undefined) userExist.state = String(state).trim();
-      if (oneTimePassword !== undefined) userExist.oneTimePassword = String(oneTimePassword);
-
-      // Admin can explicitly replace the user's 4-digit transaction PIN.
-      // A blank PIN means "leave the current PIN unchanged".
-      if (
-         transactionPin !== undefined &&
-         String(transactionPin).trim() !== ""
-      ) {
-         const pin = String(transactionPin).trim();
-
-         if (!validatePin(pin)) {
+      if (transactionPin) {
+         if (!validatePin(String(transactionPin))) {
             return res.status(400).json({
                response: "Transaction PIN must be exactly 4 digits."
             });
          }
-
-         userExist.transactionPinHash = hashPin(pin);
+         userExist.transactionPinHash = hashPin(String(transactionPin));
       }
 
-      if (emailVerified !== undefined) {
-         userExist.emailVerified =
-            emailVerified === true || emailVerified === "true";
-      }
+      // =====================================
+      // VERIFICATION FLAGS
+      // =====================================
 
-      if (otpVerified !== undefined) {
-         userExist.otpVerified =
-            otpVerified === true || otpVerified === "true";
-      }
+      if (emailVerified !== undefined) userExist.emailVerified = !!emailVerified;
+      if (otpVerified !== undefined) userExist.otpVerified = !!otpVerified;
+   
 
       const savedUser = await userExist.save();
       const safeUser = savedUser.toObject();
-
-      delete safeUser.password;
       delete safeUser.transactionPinHash;
-      delete safeUser.oneTimePassword;
 
       return res.status(200).json({
          response: safeUser
       });
 
    } catch (error) {
+
       error.message =
          error.message || "An error occurred. Please try again later.";
+
       return next(error);
-   }
-};
 
-
-// Admin: view current transfer-fee configuration.
-module.exports.getTransferFeeSettings = async (req, res, next) => {
-   try {
-      const adminExist = await Admin.findOne({ email: req.admin.email });
-
-      if (!adminExist) {
-         return res.status(403).json({ response: "Admin does not exist." });
-      }
-
-      const settings = await AppSettings.findOneAndUpdate(
-         { key: "global" },
-         { $setOnInsert: { key: "global", transferFee: 5.00 } },
-         { new: true, upsert: true }
-      );
-
-      if (!Number.isFinite(Number(settings.transferFee)) || Number(settings.transferFee) <= 0) {
-         settings.transferFee = 5.00;
-         await settings.save();
-      }
-
-      return res.status(200).json({
-         response: {
-            transferFee: Number(settings.transferFee),
-         }
-      });
-   } catch (error) {
-      error.message = error.message || "Unable to load transfer fee settings.";
-      return next(error);
-   }
-};
-
-
-// Admin: update the global transfer fee used by every new transfer.
-module.exports.updateTransferFee = async (req, res, next) => {
-   try {
-      const adminExist = await Admin.findOne({ email: req.admin.email });
-
-      if (!adminExist) {
-         return res.status(403).json({ response: "Admin does not exist." });
-      }
-
-      const fee = Number(req.body.transferFee);
-
-      if (!Number.isFinite(fee) || fee < 0) {
-         return res.status(400).json({
-            response: "Transfer fee must be a valid amount of $0 or more."
-         });
-      }
-
-      const roundedFee = Number(fee.toFixed(2));
-
-      const settings = await AppSettings.findOneAndUpdate(
-         { key: "global" },
-         { $set: { transferFee: roundedFee } },
-         { new: true, upsert: true }
-      );
-
-      return res.status(200).json({
-         response: {
-            transferFee: Number(settings.transferFee),
-         }
-      });
-   } catch (error) {
-      error.message = error.message || "Unable to update transfer fee.";
-      return next(error);
    }
 };
 
@@ -419,8 +322,6 @@ module.exports.updateHistory = async (req, res, next) => {
          nameOfBank,
          nameOfCountry,
          user,
-         fee,
-         totalDebit,
       } = req.body
 
 
@@ -454,8 +355,6 @@ module.exports.updateHistory = async (req, res, next) => {
       historyExist.nameOfBank = nameOfBank ? nameOfBank : historyExist.nameOfBank
       historyExist.nameOfCountry = nameOfCountry ? nameOfCountry : historyExist.nameOfCountry
       historyExist.status = status ? status : historyExist.status
-      if (fee !== undefined) historyExist.fee = Number(fee);
-      if (totalDebit !== undefined) historyExist.totalDebit = Number(totalDebit);
 
 
       let savedHistory = await historyExist.save()
@@ -945,3 +844,34 @@ module.exports.updateAdmin = async (req, res, next) => {
 
 
 
+
+
+// Read the global transfer fee (admin protected route).
+module.exports.getTransferFee = async (req, res, next) => {
+   try {
+      const settings = await AppSettings.findOneAndUpdate(
+         { key: "global" },
+         { $setOnInsert: { key: "global", transferFee: 5 } },
+         { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+      return res.status(200).json({ response: { transferFee: Number(settings.transferFee || 0) } });
+   } catch (error) { next(error); }
+};
+
+// Update the global transfer fee.
+module.exports.updateTransferFee = async (req, res, next) => {
+   try {
+      const fee = Number(req.body.transferFee);
+      if (!Number.isFinite(fee) || fee < 0) {
+         return res.status(400).json({ response: "Transfer fee must be a valid number greater than or equal to 0." });
+      }
+
+      const settings = await AppSettings.findOneAndUpdate(
+         { key: "global" },
+         { $set: { transferFee: Number(fee.toFixed(2)) }, $setOnInsert: { key: "global" } },
+         { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
+      );
+
+      return res.status(200).json({ response: { transferFee: Number(settings.transferFee) } });
+   } catch (error) { next(error); }
+};
