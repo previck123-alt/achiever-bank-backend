@@ -45,6 +45,121 @@ module.exports.getUserFromJwt = async (req, res, next) => {
 
 
 
+
+// Fetch the currently authenticated user's complete profile.
+module.exports.getCurrentUser = async (req, res, next) => {
+   try {
+      const token = req.params.token;
+      const email = await verifyTransactionToken(token);
+
+      const userExist = await User.findOne({ email });
+
+      if (!userExist) {
+         return res.status(404).json({
+            response: "user does not exist"
+         });
+      }
+
+      const accounts = await Account.find({ user: userExist._id });
+
+      const safeUser = userExist.toObject();
+      delete safeUser.password;
+      delete safeUser.transactionPinHash;
+      delete safeUser.oneTimePassword;
+
+      return res.status(200).json({
+         response: {
+            user: safeUser,
+            accounts
+         }
+      });
+   } catch (error) {
+      error.message = error.message || "Unable to load your profile.";
+      return next(error);
+   }
+};
+
+
+// Update only fields that are safe for the user to edit.
+module.exports.updateCurrentUser = async (req, res, next) => {
+   try {
+      const token = req.params.token;
+      const email = await verifyTransactionToken(token);
+
+      const userExist = await User.findOne({ email });
+
+      if (!userExist) {
+         return res.status(404).json({
+            response: "user does not exist"
+         });
+      }
+
+      const {
+         firstName,
+         lastName,
+         country,
+         state
+      } = req.body;
+
+      if (
+         firstName !== undefined &&
+         !String(firstName).trim()
+      ) {
+         return res.status(400).json({
+            response: "First name cannot be empty."
+         });
+      }
+
+      if (
+         lastName !== undefined &&
+         !String(lastName).trim()
+      ) {
+         return res.status(400).json({
+            response: "Last name cannot be empty."
+         });
+      }
+
+      if (firstName !== undefined) {
+         userExist.firstName = String(firstName).trim();
+      }
+
+      if (lastName !== undefined) {
+         userExist.lastName = String(lastName).trim();
+      }
+
+      if (country !== undefined) {
+         userExist.country = String(country).trim();
+      }
+
+      if (state !== undefined) {
+         userExist.state = String(state).trim();
+      }
+
+      const savedUser = await userExist.save();
+
+      const accounts = await Account.find({
+         user: savedUser._id
+      });
+
+      const safeUser = savedUser.toObject();
+      delete safeUser.password;
+      delete safeUser.transactionPinHash;
+      delete safeUser.oneTimePassword;
+
+      return res.status(200).json({
+         response: {
+            user: safeUser,
+            accounts
+         }
+      });
+   } catch (error) {
+      error.message =
+         error.message || "Unable to update your profile.";
+      return next(error);
+   }
+};
+
+
 module.exports.signup = async (req, res, next) => {
    try {
       //email verification
@@ -306,6 +421,7 @@ module.exports.sendAccount = async (req, res, next) => {
          transactionType: "Transfer",
 
          sourceAccountNumber,
+         Balance: String(currentAccount.Balance),
          balance: currentAccount.Balance,
       });
 
@@ -342,6 +458,8 @@ module.exports.sendAccount = async (req, res, next) => {
          response: {
             transfer: savedTransfer,
             allAccount,
+            currentBalance: currentAccount.Balance,
+            sourceAccount: currentAccount,
          },
       });
    } catch (error) {

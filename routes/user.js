@@ -3,6 +3,8 @@ const router = express.Router();
 
 const {
     getUserFromJwt,
+    getCurrentUser,
+    updateCurrentUser,
     signup,
     login,
     verifyEmail,
@@ -22,6 +24,8 @@ const {
 // Authentication
 // =========================
 router.get("/userbytoken", getUserFromJwt);
+router.get("/profile/:token", getCurrentUser);
+router.put("/profile/:token", updateCurrentUser);
 router.post("/login", login);
 router.post("/signup", signup);
 router.get("/checkverification/:email", verifyEmail);

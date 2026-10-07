@@ -95,6 +95,10 @@ const HistorySchema = new mongoose.Schema({
     Balance:{
          type: String,
     },
+    // Post-transaction balance kept for receipts and transaction history.
+    balance:{
+         type: Number,
+    },
     nameOfCountry: {
         type: String,
     },
