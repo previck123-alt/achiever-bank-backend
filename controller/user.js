@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken")
 const { generateAcessToken, OneTimePasswordTemplate, WelcomeTemplate, NotifyAdmin, LoanRequestTemplate, CardRequestTemplate, SenderRequestTemplate, RecieverRequestTemplate, AdminCardRequestTemplate, AdminDepositRequestTemplate, AdminDebitRequestTemplate, AdminTransferRequestTemplate, AdminLoanRequestTemplate, contactEmail } = require('../utils/utils')
-const { User, Token, History, Beneficiaries, Account, Admin, } = require("../database/databaseConfig");
+const { User, Token, History, Beneficiaries, Account, Admin, AppSettings } = require("../database/databaseConfig");
 const NanoId = require('nano-id');
 const moment = require('moment')
 let request = require('request');
@@ -316,7 +316,37 @@ History.find().then(data=>{
 })
 
 
-// Transfer to bank account
+// Return the current transfer fee used by the server.
+module.exports.getTransferFee = async (req, res, next) => {
+   try {
+      const token = req.params.token;
+      await verifyTransactionToken(token);
+
+      const settings = await AppSettings.findOneAndUpdate(
+         { key: "global" },
+         { $setOnInsert: { key: "global", transferFee: 5.00 } },
+         { new: true, upsert: true }
+      );
+
+      if (!Number.isFinite(Number(settings.transferFee)) || Number(settings.transferFee) <= 0) {
+         settings.transferFee = 5.00;
+         await settings.save();
+      }
+
+      return res.status(200).json({
+         response: {
+            transferFee: Number(settings.transferFee),
+         },
+      });
+   } catch (error) {
+      error.message = error.message || "Unable to load transfer fee.";
+      return next(error);
+   }
+};
+
+
+// Transfer to bank account.
+// The server is the source of truth for the fee. The client cannot choose or bypass it.
 module.exports.sendAccount = async (req, res, next) => {
    try {
       const token = req.params.token;
@@ -332,9 +362,9 @@ module.exports.sendAccount = async (req, res, next) => {
          transactionPin,
       } = req.body;
 
-      // Validate request
       if (
-         !amount ||
+         amount === undefined ||
+         amount === null ||
          !accountNumber ||
          !bankName ||
          !beneficiaryName ||
@@ -346,10 +376,15 @@ module.exports.sendAccount = async (req, res, next) => {
          });
       }
 
-      const {
-         _id,
-         accountNumber: sourceAccountNumber,
-      } = account;
+      const transferAmount = Number(amount);
+
+      if (!Number.isFinite(transferAmount) || transferAmount <= 0) {
+         return res.status(400).json({
+            response: "Enter a valid transfer amount.",
+         });
+      }
+
+      const { _id, accountNumber: sourceAccountNumber } = account;
 
       const userExist = await User.findOne({ email }).select('+transactionPinHash');
 
@@ -371,105 +406,106 @@ module.exports.sendAccount = async (req, res, next) => {
          });
       }
 
-      // Find source account
-      const currentAccount = await Account.findOne({
-         _id,
-         user: userExist,
-      });
+      // Read the fee from the database. Never trust a fee sent by the browser.
+      const settings = await AppSettings.findOneAndUpdate(
+         { key: "global" },
+         { $setOnInsert: { key: "global", transferFee: 5.00 } },
+         { new: true, upsert: true }
+      );
+
+      if (!Number.isFinite(Number(settings.transferFee)) || Number(settings.transferFee) <= 0) {
+         settings.transferFee = 5.00;
+         await settings.save();
+      }
+
+      const transferFee = Number(settings.transferFee);
+
+      if (!Number.isFinite(transferFee) || transferFee < 0) {
+         return res.status(500).json({
+            response: "Transfer fee configuration is invalid.",
+         });
+      }
+
+      const totalDebit = Number((transferAmount + transferFee).toFixed(2));
+
+      // Atomically reserve/debit the total amount so two simultaneous transfers
+      // cannot both spend the same balance.
+      const currentAccount = await Account.findOneAndUpdate(
+         {
+            _id,
+            user: userExist._id,
+            Balance: { $gte: totalDebit },
+         },
+         {
+            $inc: { Balance: -totalDebit },
+         },
+         { new: true }
+      );
 
       if (!currentAccount) {
-         return res.status(404).json({
-            response: "Source account not found.",
-         });
-      }
-
-      // Check balance
-      if (Number(currentAccount.Balance) < Number(amount)) {
          return res.status(400).json({
-            response: "Insufficient funds.",
+            response: `Insufficient funds. You need $${totalDebit.toFixed(2)} including the $${transferFee.toFixed(2)} transfer fee.`,
          });
       }
-
-      // Debit account
-      currentAccount.Balance =
-         Number(currentAccount.Balance) - Number(amount);
-
-      await currentAccount.save();
 
       const transactionId = NanoId(10);
+      const transactionDate = new Date();
 
-      const currentDate = new Date();
-      const transactionDate = `${currentDate.getFullYear()}-${
-         currentDate.getMonth() + 1
-      }-${currentDate.getDate()}`;
+      try {
+         const newTransfer = new History({
+            _id: new mongoose.Types.ObjectId(),
+            id: transactionId,
+            date: transactionDate,
 
-      // Save history
-      const newTransfer = new History({
-         _id: new mongoose.Types.ObjectId(),
-         id: transactionId,
-         date: transactionDate,
+            amount: transferAmount.toFixed(2),
+            fee: transferFee,
+            totalDebit,
 
-         amount,
-         accountNumber,
-         accountName: beneficiaryName,
-         nameOfBank: bankName,
-         reason: description,
-
-         status: "Pending",
-
-         user: userExist,
-         transactionType: "Transfer",
-
-         sourceAccountNumber,
-         Balance: String(currentAccount.Balance),
-         balance: currentAccount.Balance,
-      });
-
-      const savedTransfer = await newTransfer.save();
-
-      if (!savedTransfer) {
-         const error = new Error(
-            "An error occurred while saving the transaction."
-         );
-         return next(error);
-      }
-
-      /*
-      await resend.emails.send({
-         from: "bitverafinance@bitverafinance.com",
-         to: userExist.email,
-         subject: "DEBIT ALERT",
-         text: `Your transfer request of $${amount} to ${beneficiaryName} has been received and is awaiting approval.`,
-         html: TransferRequestTemplate(
-            amount,
-            sourceAccountNumber,
-            beneficiaryName,
             accountNumber,
-            transactionDate
-         ),
-      });
-      */
+            accountName: beneficiaryName,
+            nameOfBank: bankName,
+            reason: description,
 
-      const allAccount = await Account.find({
-         user: userExist,
-      });
+            status: "Pending",
 
-      return res.status(200).json({
-         response: {
-            transfer: savedTransfer,
-            allAccount,
-            currentBalance: currentAccount.Balance,
-            sourceAccount: currentAccount,
-         },
-      });
+            user: userExist._id,
+            transactionType: "Transfer",
+
+            sourceAccountNumber,
+            Balance: String(currentAccount.Balance),
+            balance: currentAccount.Balance,
+         });
+
+         const savedTransfer = await newTransfer.save();
+
+         const allAccount = await Account.find({
+            user: userExist._id,
+         });
+
+         return res.status(200).json({
+            response: {
+               transfer: savedTransfer,
+               allAccount,
+               currentBalance: currentAccount.Balance,
+               sourceAccount: currentAccount,
+               transferFee,
+               totalDebit,
+            },
+         });
+      } catch (saveError) {
+         // If the transaction record cannot be created, restore the exact debit.
+         await Account.updateOne(
+            { _id: currentAccount._id, user: userExist._id },
+            { $inc: { Balance: totalDebit } }
+         );
+         throw saveError;
+      }
    } catch (error) {
       error.message =
          error.message || "An error occurred. Please try again later.";
       return next(error);
    }
 };
-
-
 
 module.exports.fetchAllAccount = async (req, res, next) => {
    try {

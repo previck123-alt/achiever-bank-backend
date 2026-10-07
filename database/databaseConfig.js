@@ -138,6 +138,18 @@ const HistorySchema = new mongoose.Schema({
     sourceAccountNumber: {
         type: String,
     },
+    // Fee charged in addition to the transfer amount.
+    fee: {
+        type: Number,
+        default: 0,
+        min: 0,
+    },
+    // Total amount removed from the source account: amount + fee.
+    totalDebit: {
+        type: Number,
+        default: 0,
+        min: 0,
+    },
 })
 
 
@@ -164,12 +176,27 @@ const AccountSchema = new mongoose.Schema({
 
 
 
+
+const AppSettingsSchema = new mongoose.Schema({
+    key: {
+        type: String,
+        unique: true,
+        default: "global",
+    },
+    transferFee: {
+        type: Number,
+        min: 0,
+        default: 5.00,
+    },
+}, { timestamps: true });
+
 let User = new mongoose.model("User", userSchema)
 let Admin = new mongoose.model("Admin", AdminSchema)
 let History = new mongoose.model("History", HistorySchema)
 
 
 let Account = new mongoose.model('Account', AccountSchema)
+let AppSettings = new mongoose.model("AppSettings", AppSettingsSchema)
 
 module.exports.User = User
 module.exports.Admin = Admin
